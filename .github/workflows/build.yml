@@ -3,6 +3,8 @@ name: Build VANTA Game Tools APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - 'VANTA-Game-Tools-V1.zip'
       - '.github/workflows/build.yml'
@@ -21,19 +23,34 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android 35 SDK
+      - name: Prepare Android SDK 35
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          test -x "$SDKMANAGER" || (
+            echo "sdkmanager not found"
+            exit 1
+          )
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
@@ -43,24 +60,46 @@ jobs:
       - name: Extract VANTA project
         shell: bash
         run: |
-          test -f VANTA-Game-Tools-V1.zip || (echo "VANTA-Game-Tools-V1.zip not found in repository root" && exit 1)
+          test -f VANTA-Game-Tools-V1.zip || (
+            echo "VANTA-Game-Tools-V1.zip not found in repository root"
+            exit 1
+          )
+
           rm -rf vanta-build
           mkdir -p vanta-build
+
           unzip -q VANTA-Game-Tools-V1.zip -d vanta-build
-          echo "Project files:"
-          find vanta-build -maxdepth 2 -type f | sort | head -80
+
+          test -f vanta-build/settings.gradle || (
+            echo "settings.gradle not found after extraction"
+            find vanta-build -maxdepth 3 -type f | sort
+            exit 1
+          )
+
+          test -f vanta-build/app/build.gradle || (
+            echo "app/build.gradle not found after extraction"
+            exit 1
+          )
 
       - name: Build APK
         working-directory: vanta-build
         shell: bash
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Prepare artifact
         shell: bash
         run: |
           APK="vanta-build/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$APK" || (echo "APK was not generated" && exit 1)
+
+          test -f "$APK" || (
+            echo "APK was not generated"
+            find vanta-build/app/build/outputs -type f 2>/dev/null | sort
+            exit 1
+          )
+
           cp "$APK" VANTA-Game-Tools-V1-debug.apk
+
           ls -lh VANTA-Game-Tools-V1-debug.apk
 
       - name: Upload APK
